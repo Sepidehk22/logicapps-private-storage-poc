@@ -1,0 +1,510 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.47.16.16243",
+      "templateHash": "14778567618397489002"
+    }
+  },
+  "parameters": {
+    "environmentName": {
+      "type": "string",
+      "minLength": 1,
+      "metadata": {
+        "description": "Stable environment identifier. Use the same value in both stages."
+      }
+    },
+    "location": {
+      "type": "string",
+      "minLength": 1,
+      "metadata": {
+        "description": "Approved region supporting internal ASE v3 and Windows I1v2."
+      }
+    },
+    "vnetAddressPrefix": {
+      "type": "string",
+      "metadata": {
+        "description": "Address space of the NEW dedicated VNet, without overlaps."
+      }
+    },
+    "aseSubnetPrefix": {
+      "type": "string",
+      "metadata": {
+        "description": "Dedicated empty ASE subnet, normally /24."
+      }
+    },
+    "privateEndpointSubnetPrefix": {
+      "type": "string",
+      "metadata": {
+        "description": "Private Endpoint subnet, separate from the ASE subnet."
+      }
+    },
+    "dnsServerIps": {
+      "type": "array",
+      "minLength": 1,
+      "metadata": {
+        "description": "Reachable private customer DNS server IPs. Routing and forwarding are customer prerequisites."
+      }
+    },
+    "resolverVnetResourceIds": {
+      "type": "array",
+      "minLength": 1,
+      "metadata": {
+        "description": "Existing Azure VNet resource IDs hosting the customer DNS forwarders or inbound resolver. Adds DNS links only."
+      }
+    },
+    "deployAse": {
+      "type": "bool",
+      "metadata": {
+        "description": "Keep false for network preparation. Set true only after customer routing and DNS checks pass."
+      }
+    },
+    "tags": {
+      "type": "object",
+      "defaultValue": {},
+      "metadata": {
+        "description": "Azure resource tags. Do not include confidential values."
+      }
+    }
+  },
+  "variables": {
+    "suffix": "[uniqueString(resourceGroup().id, parameters('environmentName'))]",
+    "storageServices": [
+      "blob",
+      "queue",
+      "table"
+    ],
+    "privateZoneNames": [
+      "[format('privatelink.blob.{0}', environment().suffixes.storage)]",
+      "[format('privatelink.queue.{0}', environment().suffixes.storage)]",
+      "[format('privatelink.table.{0}', environment().suffixes.storage)]",
+      "privatelink.monitor.azure.com",
+      "privatelink.oms.opinsights.azure.com",
+      "privatelink.ods.opinsights.azure.com",
+      "privatelink.agentsvc.azure-automation.net"
+    ],
+    "resolverLinks": "[flatten(map(variables('privateZoneNames'), lambda('zoneName', map(parameters('resolverVnetResourceIds'), lambda('vnetId', createObject('zoneName', lambdaVariables('zoneName'), 'vnetId', lambdaVariables('vnetId')))))))]",
+    "storageRoleIds": [
+      "17d1049b-9a84-46fb-8f53-869881c3d3ab",
+      "b7e6dc6d-f1e8-4753-8033-0f276bb0955b",
+      "974c5e8b-45b9-4653-ba55-5f855dd0fb88",
+      "0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3"
+    ]
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Network/networkSecurityGroups",
+      "apiVersion": "2024-05-01",
+      "name": "[format('nsg-ase-{0}', variables('suffix'))]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "properties": {
+        "securityRules": [
+          {
+            "name": "AllowPlatformHealth",
+            "properties": {
+              "priority": 100,
+              "direction": "Inbound",
+              "access": "Allow",
+              "protocol": "Tcp",
+              "sourceAddressPrefix": "AzureLoadBalancer",
+              "sourcePortRange": "*",
+              "destinationAddressPrefix": "*",
+              "destinationPortRange": "80"
+            }
+          },
+          {
+            "name": "AllowPrivateHttps",
+            "properties": {
+              "priority": 110,
+              "direction": "Inbound",
+              "access": "Allow",
+              "protocol": "Tcp",
+              "sourceAddressPrefix": "VirtualNetwork",
+              "sourcePortRange": "*",
+              "destinationAddressPrefix": "*",
+              "destinationPortRange": "443"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Network/virtualNetworks",
+      "apiVersion": "2024-05-01",
+      "name": "[format('vnet-{0}', variables('suffix'))]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "properties": {
+        "addressSpace": {
+          "addressPrefixes": [
+            "[parameters('vnetAddressPrefix')]"
+          ]
+        },
+        "dhcpOptions": {
+          "dnsServers": "[parameters('dnsServerIps')]"
+        },
+        "subnets": [
+          {
+            "name": "ase",
+            "properties": {
+              "addressPrefix": "[parameters('aseSubnetPrefix')]",
+              "networkSecurityGroup": {
+                "id": "[resourceId('Microsoft.Network/networkSecurityGroups', format('nsg-ase-{0}', variables('suffix')))]"
+              },
+              "delegations": [
+                {
+                  "name": "aseDelegation",
+                  "properties": {
+                    "serviceName": "Microsoft.Web/hostingEnvironments"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "name": "private-endpoints",
+            "properties": {
+              "addressPrefix": "[parameters('privateEndpointSubnetPrefix')]",
+              "privateEndpointNetworkPolicies": "Disabled"
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkSecurityGroups', format('nsg-ase-{0}', variables('suffix')))]"
+      ]
+    },
+    {
+      "copy": {
+        "name": "zones",
+        "count": "[length(variables('privateZoneNames'))]"
+      },
+      "type": "Microsoft.Network/privateDnsZones",
+      "apiVersion": "2024-06-01",
+      "name": "[variables('privateZoneNames')[copyIndex()]]",
+      "location": "global",
+      "tags": "[parameters('tags')]"
+    },
+    {
+      "copy": {
+        "name": "vnetLinks",
+        "count": "[length(variables('privateZoneNames'))]"
+      },
+      "type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+      "apiVersion": "2024-06-01",
+      "name": "[format('{0}/{1}', variables('privateZoneNames')[copyIndex()], 'ase-vnet')]",
+      "location": "global",
+      "properties": {
+        "virtualNetwork": {
+          "id": "[resourceId('Microsoft.Network/virtualNetworks', format('vnet-{0}', variables('suffix')))]"
+        },
+        "registrationEnabled": false
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/virtualNetworks', format('vnet-{0}', variables('suffix')))]",
+        "[resourceId('Microsoft.Network/privateDnsZones', variables('privateZoneNames')[copyIndex()])]"
+      ]
+    },
+    {
+      "copy": {
+        "name": "resolverZoneLinks",
+        "count": "[length(variables('resolverLinks'))]"
+      },
+      "type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+      "apiVersion": "2024-06-01",
+      "name": "[format('{0}/resolver-{1}', variables('resolverLinks')[copyIndex()].zoneName, uniqueString(variables('resolverLinks')[copyIndex()].vnetId))]",
+      "location": "global",
+      "properties": {
+        "virtualNetwork": {
+          "id": "[variables('resolverLinks')[copyIndex()].vnetId]"
+        },
+        "registrationEnabled": false
+      },
+      "dependsOn": [
+        "zones"
+      ]
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2023-05-01",
+      "name": "[format('st{0}', variables('suffix'))]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "kind": "StorageV2",
+      "sku": {
+        "name": "Standard_LRS"
+      },
+      "properties": {
+        "minimumTlsVersion": "TLS1_2",
+        "supportsHttpsTrafficOnly": true,
+        "allowSharedKeyAccess": false,
+        "allowBlobPublicAccess": false,
+        "publicNetworkAccess": "Disabled",
+        "networkAcls": {
+          "defaultAction": "Deny",
+          "bypass": "None"
+        }
+      }
+    },
+    {
+      "copy": {
+        "name": "storageEndpoints",
+        "count": "[length(variables('storageServices'))]"
+      },
+      "type": "Microsoft.Network/privateEndpoints",
+      "apiVersion": "2024-05-01",
+      "name": "[format('pe-{0}-{1}', variables('storageServices')[copyIndex()], variables('suffix'))]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "properties": {
+        "subnet": {
+          "id": "[format('{0}/subnets/private-endpoints', resourceId('Microsoft.Network/virtualNetworks', format('vnet-{0}', variables('suffix'))))]"
+        },
+        "privateLinkServiceConnections": [
+          {
+            "name": "[variables('storageServices')[copyIndex()]]",
+            "properties": {
+              "privateLinkServiceId": "[resourceId('Microsoft.Storage/storageAccounts', format('st{0}', variables('suffix')))]",
+              "groupIds": [
+                "[variables('storageServices')[copyIndex()]]"
+              ]
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', format('st{0}', variables('suffix')))]",
+        "[resourceId('Microsoft.Network/virtualNetworks', format('vnet-{0}', variables('suffix')))]"
+      ]
+    },
+    {
+      "copy": {
+        "name": "storageZoneGroups",
+        "count": "[length(variables('storageServices'))]"
+      },
+      "type": "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}', format('pe-{0}-{1}', variables('storageServices')[copyIndex()], variables('suffix')), 'default')]",
+      "properties": {
+        "privateDnsZoneConfigs": [
+          {
+            "name": "[variables('storageServices')[copyIndex()]]",
+            "properties": {
+              "privateDnsZoneId": "[resourceId('Microsoft.Network/privateDnsZones', variables('privateZoneNames')[copyIndex()])]"
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateEndpoints', format('pe-{0}-{1}', variables('storageServices')[copyIndex()], variables('suffix')))]",
+        "[resourceId('Microsoft.Network/privateDnsZones', variables('privateZoneNames')[copyIndex()])]"
+      ]
+    },
+    {
+      "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+      "apiVersion": "2023-01-31",
+      "name": "[format('id-{0}', variables('suffix'))]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]"
+    },
+    {
+      "copy": {
+        "name": "storageRoles",
+        "count": "[length(variables('storageRoleIds'))]"
+      },
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts', format('st{0}', variables('suffix')))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', format('st{0}', variables('suffix'))), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-{0}', variables('suffix'))), variables('storageRoleIds')[copyIndex()])]",
+      "properties": {
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-{0}', variables('suffix'))), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal",
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('storageRoleIds')[copyIndex()])]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-{0}', variables('suffix')))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', format('st{0}', variables('suffix')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces",
+      "apiVersion": "2023-09-01",
+      "name": "[format('log-{0}', variables('suffix'))]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "properties": {
+        "sku": {
+          "name": "PerGB2018"
+        },
+        "retentionInDays": 30,
+        "publicNetworkAccessForIngestion": "Disabled",
+        "publicNetworkAccessForQuery": "Disabled"
+      }
+    },
+    {
+      "type": "Microsoft.Insights/components",
+      "apiVersion": "2020-02-02",
+      "name": "[format('ai-{0}', variables('suffix'))]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "kind": "web",
+      "properties": {
+        "Application_Type": "web",
+        "WorkspaceResourceId": "[resourceId('Microsoft.OperationalInsights/workspaces', format('log-{0}', variables('suffix')))]",
+        "DisableLocalAuth": true,
+        "publicNetworkAccessForIngestion": "Disabled",
+        "publicNetworkAccessForQuery": "Disabled"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.OperationalInsights/workspaces', format('log-{0}', variables('suffix')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Insights/components', format('ai-{0}', variables('suffix')))]",
+      "name": "[guid(resourceId('Microsoft.Insights/components', format('ai-{0}', variables('suffix'))), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-{0}', variables('suffix'))), 'metricsPublisher')]",
+      "properties": {
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-{0}', variables('suffix'))), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal",
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '3913510d-42f4-4e42-8a64-420c390055eb')]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-{0}', variables('suffix')))]",
+        "[resourceId('Microsoft.Insights/components', format('ai-{0}', variables('suffix')))]"
+      ]
+    },
+    {
+      "type": "microsoft.insights/privateLinkScopes",
+      "apiVersion": "2021-07-01-preview",
+      "name": "[format('ampls-{0}', variables('suffix'))]",
+      "location": "global",
+      "tags": "[parameters('tags')]",
+      "properties": {
+        "accessModeSettings": {
+          "ingestionAccessMode": "PrivateOnly",
+          "queryAccessMode": "PrivateOnly"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Insights/privateLinkScopes/scopedResources",
+      "apiVersion": "2021-07-01-preview",
+      "name": "[format('{0}/{1}', format('ampls-{0}', variables('suffix')), 'insights')]",
+      "properties": {
+        "linkedResourceId": "[resourceId('Microsoft.Insights/components', format('ai-{0}', variables('suffix')))]"
+      },
+      "dependsOn": [
+        "[resourceId('microsoft.insights/privateLinkScopes', format('ampls-{0}', variables('suffix')))]",
+        "[resourceId('Microsoft.Insights/components', format('ai-{0}', variables('suffix')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Insights/privateLinkScopes/scopedResources",
+      "apiVersion": "2021-07-01-preview",
+      "name": "[format('{0}/{1}', format('ampls-{0}', variables('suffix')), 'workspace')]",
+      "properties": {
+        "linkedResourceId": "[resourceId('Microsoft.OperationalInsights/workspaces', format('log-{0}', variables('suffix')))]"
+      },
+      "dependsOn": [
+        "[resourceId('microsoft.insights/privateLinkScopes', format('ampls-{0}', variables('suffix')))]",
+        "[resourceId('Microsoft.OperationalInsights/workspaces', format('log-{0}', variables('suffix')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/privateEndpoints",
+      "apiVersion": "2024-05-01",
+      "name": "[format('pe-monitor-{0}', variables('suffix'))]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "properties": {
+        "subnet": {
+          "id": "[format('{0}/subnets/private-endpoints', resourceId('Microsoft.Network/virtualNetworks', format('vnet-{0}', variables('suffix'))))]"
+        },
+        "privateLinkServiceConnections": [
+          {
+            "name": "monitor",
+            "properties": {
+              "privateLinkServiceId": "[resourceId('microsoft.insights/privateLinkScopes', format('ampls-{0}', variables('suffix')))]",
+              "groupIds": [
+                "azuremonitor"
+              ]
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('microsoft.insights/privateLinkScopes', format('ampls-{0}', variables('suffix')))]",
+        "[resourceId('Microsoft.Insights/privateLinkScopes/scopedResources', format('ampls-{0}', variables('suffix')), 'insights')]",
+        "[resourceId('Microsoft.Network/virtualNetworks', format('vnet-{0}', variables('suffix')))]",
+        "[resourceId('Microsoft.Insights/privateLinkScopes/scopedResources', format('ampls-{0}', variables('suffix')), 'workspace')]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}', format('pe-monitor-{0}', variables('suffix')), 'default')]",
+      "properties": {
+        "copy": [
+          {
+            "name": "privateDnsZoneConfigs",
+            "count": "[length(createArray(0, 3, 4, 5, 6))]",
+            "input": {
+              "name": "[format('zone{0}', createArray(0, 3, 4, 5, 6)[copyIndex('privateDnsZoneConfigs')])]",
+              "properties": {
+                "privateDnsZoneId": "[resourceId('Microsoft.Network/privateDnsZones', variables('privateZoneNames')[createArray(0, 3, 4, 5, 6)[copyIndex('privateDnsZoneConfigs')]])]"
+              }
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateEndpoints', format('pe-monitor-{0}', variables('suffix')))]",
+        "zones"
+      ]
+    },
+    {
+      "condition": "[parameters('deployAse')]",
+      "type": "Microsoft.Web/hostingEnvironments",
+      "apiVersion": "2024-11-01",
+      "name": "[format('ase-{0}', variables('suffix'))]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "kind": "ASEV3",
+      "properties": {
+        "internalLoadBalancingMode": "Web, Publishing",
+        "zoneRedundant": false,
+        "virtualNetwork": {
+          "id": "[format('{0}/subnets/ase', resourceId('Microsoft.Network/virtualNetworks', format('vnet-{0}', variables('suffix'))))]"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateEndpoints/privateDnsZoneGroups', format('pe-monitor-{0}', variables('suffix')), 'default')]",
+        "resolverZoneLinks",
+        "storageZoneGroups",
+        "[resourceId('Microsoft.Network/virtualNetworks', format('vnet-{0}', variables('suffix')))]",
+        "vnetLinks"
+      ]
+    }
+  ],
+  "outputs": {
+    "resourceNames": {
+      "type": "object",
+      "value": {
+        "ase": "[format('ase-{0}', variables('suffix'))]",
+        "vnet": "[format('vnet-{0}', variables('suffix'))]",
+        "storage": "[format('st{0}', variables('suffix'))]",
+        "identity": "[format('id-{0}', variables('suffix'))]",
+        "insights": "[format('ai-{0}', variables('suffix'))]",
+        "workspace": "[format('log-{0}', variables('suffix'))]"
+      }
+    },
+    "vnetResourceId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Network/virtualNetworks', format('vnet-{0}', variables('suffix')))]"
+    }
+  }
+}

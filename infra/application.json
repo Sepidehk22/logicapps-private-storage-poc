@@ -1,0 +1,278 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.47.16.16243",
+      "templateHash": "295265923434334072"
+    }
+  },
+  "parameters": {
+    "environmentName": {
+      "type": "string",
+      "minLength": 1,
+      "metadata": {
+        "description": "Same environment identifier as foundation.bicep, in the same resource group."
+      }
+    },
+    "location": {
+      "type": "string",
+      "minLength": 1,
+      "metadata": {
+        "description": "Same approved region as the existing ASE."
+      }
+    },
+    "aseDnsSuffix": {
+      "type": "string",
+      "minLength": 1,
+      "metadata": {
+        "description": "Actual DNS suffix read from the Ready internal ASE. Do not invent this value."
+      }
+    },
+    "aseInternalIp": {
+      "type": "string",
+      "minLength": 1,
+      "metadata": {
+        "description": "Actual internal ASE VIP, read after foundation deployment."
+      }
+    },
+    "resolverVnetResourceIds": {
+      "type": "array",
+      "minLength": 1,
+      "metadata": {
+        "description": "Same existing resolver VNet IDs as the foundation stage."
+      }
+    },
+    "tags": {
+      "type": "object",
+      "defaultValue": {}
+    }
+  },
+  "variables": {
+    "suffix": "[uniqueString(resourceGroup().id, parameters('environmentName'))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Network/privateDnsZones",
+      "apiVersion": "2024-06-01",
+      "name": "[parameters('aseDnsSuffix')]",
+      "location": "global",
+      "tags": "[parameters('tags')]"
+    },
+    {
+      "type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+      "apiVersion": "2024-06-01",
+      "name": "[format('{0}/{1}', parameters('aseDnsSuffix'), 'ase-vnet')]",
+      "location": "global",
+      "properties": {
+        "virtualNetwork": {
+          "id": "[resourceId('Microsoft.Network/virtualNetworks', format('vnet-{0}', variables('suffix')))]"
+        },
+        "registrationEnabled": false
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateDnsZones', parameters('aseDnsSuffix'))]"
+      ]
+    },
+    {
+      "copy": {
+        "name": "resolverLinks",
+        "count": "[length(parameters('resolverVnetResourceIds'))]"
+      },
+      "type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+      "apiVersion": "2024-06-01",
+      "name": "[format('{0}/{1}', parameters('aseDnsSuffix'), format('resolver-{0}', uniqueString(parameters('resolverVnetResourceIds')[copyIndex()])))]",
+      "location": "global",
+      "properties": {
+        "virtualNetwork": {
+          "id": "[parameters('resolverVnetResourceIds')[copyIndex()]]"
+        },
+        "registrationEnabled": false
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateDnsZones', parameters('aseDnsSuffix'))]"
+      ]
+    },
+    {
+      "copy": {
+        "name": "aseRecords",
+        "count": "[length(createArray('@', '*', '*.scm'))]"
+      },
+      "type": "Microsoft.Network/privateDnsZones/A",
+      "apiVersion": "2024-06-01",
+      "name": "[format('{0}/{1}', parameters('aseDnsSuffix'), createArray('@', '*', '*.scm')[copyIndex()])]",
+      "properties": {
+        "ttl": 60,
+        "aRecords": [
+          {
+            "ipv4Address": "[parameters('aseInternalIp')]"
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateDnsZones', parameters('aseDnsSuffix'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Web/serverfarms",
+      "apiVersion": "2024-11-01",
+      "name": "[format('asp-{0}', variables('suffix'))]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "sku": {
+        "name": "I1v2",
+        "tier": "IsolatedV2",
+        "capacity": 1
+      },
+      "properties": {
+        "reserved": false,
+        "hostingEnvironmentProfile": {
+          "id": "[resourceId('Microsoft.Web/hostingEnvironments', format('ase-{0}', variables('suffix')))]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2024-11-01",
+      "name": "[format('la-{0}', variables('suffix'))]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "kind": "functionapp,workflowapp",
+      "identity": {
+        "type": "UserAssigned",
+        "userAssignedIdentities": {
+          "[format('{0}', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-{0}', variables('suffix'))))]": {}
+        }
+      },
+      "properties": {
+        "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', format('asp-{0}', variables('suffix')))]",
+        "hostingEnvironmentProfile": {
+          "id": "[resourceId('Microsoft.Web/hostingEnvironments', format('ase-{0}', variables('suffix')))]"
+        },
+        "httpsOnly": true,
+        "siteConfig": {
+          "alwaysOn": true,
+          "use32BitWorkerProcess": false,
+          "minTlsVersion": "1.2",
+          "scmMinTlsVersion": "1.2",
+          "ftpsState": "Disabled",
+          "cors": {
+            "allowedOrigins": [
+              "https://portal.azure.com"
+            ],
+            "supportCredentials": false
+          },
+          "appSettings": [
+            {
+              "name": "APP_KIND",
+              "value": "workflowApp"
+            },
+            {
+              "name": "FUNCTIONS_EXTENSION_VERSION",
+              "value": "~4"
+            },
+            {
+              "name": "FUNCTIONS_WORKER_RUNTIME",
+              "value": "dotnet"
+            },
+            {
+              "name": "AzureWebJobsStorage__managedIdentityResourceId",
+              "value": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-{0}', variables('suffix')))]"
+            },
+            {
+              "name": "AzureWebJobsStorage__credential",
+              "value": "managedIdentity"
+            },
+            {
+              "name": "AzureWebJobsStorage__blobServiceUri",
+              "value": "[format('https://{0}.blob.{1}', format('st{0}', variables('suffix')), environment().suffixes.storage)]"
+            },
+            {
+              "name": "AzureWebJobsStorage__queueServiceUri",
+              "value": "[format('https://{0}.queue.{1}', format('st{0}', variables('suffix')), environment().suffixes.storage)]"
+            },
+            {
+              "name": "AzureWebJobsStorage__tableServiceUri",
+              "value": "[format('https://{0}.table.{1}', format('st{0}', variables('suffix')), environment().suffixes.storage)]"
+            },
+            {
+              "name": "APPLICATIONINSIGHTS_CONNECTION_STRING",
+              "value": "[reference(resourceId('Microsoft.Insights/components', format('ai-{0}', variables('suffix'))), '2020-02-02').ConnectionString]"
+            },
+            {
+              "name": "APPLICATIONINSIGHTS_AUTHENTICATION_STRING",
+              "value": "[format('Authorization=AAD;ClientId={0}', reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-{0}', variables('suffix'))), '2023-01-31').clientId)]"
+            }
+          ]
+        }
+      },
+      "dependsOn": [
+        "aseRecords",
+        "[resourceId('Microsoft.Web/serverfarms', format('asp-{0}', variables('suffix')))]",
+        "resolverLinks",
+        "[resourceId('Microsoft.Network/privateDnsZones/virtualNetworkLinks', parameters('aseDnsSuffix'), 'ase-vnet')]"
+      ]
+    },
+    {
+      "type": "Microsoft.Web/sites/basicPublishingCredentialsPolicies",
+      "apiVersion": "2024-11-01",
+      "name": "[format('{0}/{1}', format('la-{0}', variables('suffix')), 'scm')]",
+      "properties": {
+        "allow": false
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/sites', format('la-{0}', variables('suffix')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Web/sites/basicPublishingCredentialsPolicies",
+      "apiVersion": "2024-11-01",
+      "name": "[format('{0}/{1}', format('la-{0}', variables('suffix')), 'ftp')]",
+      "properties": {
+        "allow": false
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/sites', format('la-{0}', variables('suffix')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Insights/diagnosticSettings",
+      "apiVersion": "2021-05-01-preview",
+      "scope": "[resourceId('Microsoft.Web/sites', format('la-{0}', variables('suffix')))]",
+      "name": "workflow-runtime",
+      "properties": {
+        "workspaceId": "[resourceId('Microsoft.OperationalInsights/workspaces', format('log-{0}', variables('suffix')))]",
+        "logs": [
+          {
+            "categoryGroup": "allLogs",
+            "enabled": true
+          }
+        ],
+        "metrics": [
+          {
+            "category": "AllMetrics",
+            "enabled": true
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/sites', format('la-{0}', variables('suffix')))]"
+      ]
+    }
+  ],
+  "outputs": {
+    "appName": {
+      "type": "string",
+      "value": "[format('la-{0}', variables('suffix'))]"
+    },
+    "planName": {
+      "type": "string",
+      "value": "[format('asp-{0}', variables('suffix'))]"
+    },
+    "privateAppUrl": {
+      "type": "string",
+      "value": "[format('https://{0}', reference(resourceId('Microsoft.Web/sites', format('la-{0}', variables('suffix'))), '2024-11-01').defaultHostName)]"
+    }
+  }
+}

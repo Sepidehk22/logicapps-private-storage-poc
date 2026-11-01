@@ -59,3 +59,32 @@ e correggere la causa prima di proseguire.
 
 Consultare la [guida Microsoft per managed identity e storage del runtime](https://learn.microsoft.com/azure/logic-apps/create-single-tenant-workflows-azure-portal#set-up-managed-identity-access-to-your-storage-account)
 per verificare requisiti e configurazione del modello ASE.
+
+## Deployment con template ARM
+
+Per automatizzare la creazione con **DNS aziendale esistente**, seguire la
+[procedura ARM](docs/runbook.md#12-deployment-con-template-arm).
+
+1. Scaricare [fondazione](infra/foundation.json) e
+   [applicazione](infra/application.json), con i relativi parametri di
+   esempio: [fondazione](infra/foundation.parameters.example.json) e
+   [applicazione](infra/application.parameters.example.json).
+2. Compilare copie locali dei parametri; non pubblicare valori aziendali.
+3. Preparare prima la rete con `deployAse=false`, configurare routing e DNS,
+   quindi creare ASE con `deployAse=true`.
+4. Dopo ASE Ready, usare dominio e VIP effettivi per il template applicazione.
+5. Eseguire validazione ARM e what-if nella subscription di destinazione
+   prima di ogni passaggio.
+6. Configurare workflow, host.json e Workbook seguendo il manuale, quindi collaudare.
+
+Usare questi template solo per risorse dedicate in un nuovo resource group
+su Azure pubblico. Non includono VM, Bastion, gateway, peering, password,
+workflow o Workbook. Non modificano policy o DNS server aziendali; i link
+alle VNet dei resolver richiedono approvazione e permessi.
+Non usare questi template per aggiornare un'app esistente: le impostazioni
+applicative vengono definite integralmente dal template.
+
+I sorgenti [foundation.bicep](infra/foundation.bicep) e
+[application.bicep](infra/application.bicep) permettono di rigenerare i JSON.
+Verificare deployment e funzionamento nella subscription di destinazione:
+la compilazione non certifica capacita', connettivita' o ingestion della telemetria.

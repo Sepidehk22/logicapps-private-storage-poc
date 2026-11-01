@@ -488,3 +488,203 @@ Workbook salvato e accessibile privatamente, stati e freshness corretti.
 6. Ottenere l'accettazione sulla base dei risultati completi.
    In presenza di test FAIL o INCOMPLETI, registrare causa e azione richiesta
    senza dichiarare completata la soluzione.
+
+## 12. Deployment con template ARM
+
+Usare questa procedura in alternativa alla creazione manuale delle risorse
+delle fasi 1-7. Dopo il deployment riprendere dalla fase 8 per host.json,
+workflow e Workbook, e completare il collaudo.
+
+**Dove operare:** PowerShell 7 con Azure CLI autenticata nella subscription
+di destinazione. Aprire il terminale nella cartella del repository scaricato.
+
+### 12.1. Verificare il perimetro
+
+1. Usare Azure pubblico e un **nuovo resource group dedicato**.
+   Non puntare i template a una fondazione o applicazione gia' esistente.
+2. Approvare costi di ASE/I1v2, storage, PE, DNS, Monitor e traffico.
+   Non considerare la disattivazione dell'app sufficiente a fermare gli addebiti.
+3. Predisporre DNS aziendale, resolver Azure/inbound e client amministrativo
+   privato. I template non creano VM, Bastion, gateway o peering.
+4. Identificare le VNet Azure dei forwarder o inbound resolver e ottenere
+   l'approvazione ai link DNS. Non duplicare zone private o AMPLS condivisi.
+   Se la rete aziendale richiede l'uso di zone/AMPLS esistenti, fermarsi e
+   adattare il progetto prima di distribuire questa versione dedicata.
+5. Verificare Contributor per la creazione delle risorse e permesso
+   `Microsoft.Authorization/roleAssignments/write` sugli scope richiesti.
+   Verificare inoltre i permessi per collegare le VNet dei resolver.
+6. Prevedere DNS UDP/TCP 53, target HTTPS, PE storage/Monitor e accesso
+   amministrativo privato secondo la matrice delle porte.
+   Verificare le dipendenze platform e l'egress approvato.
+7. Non pubblicare il piano operativo, log, output reali, parametri compilati
+   o token. I JSON generici non contengono credenziali e non richiedono password.
+
+### 12.2. Compilare i parametri
+
+Creare copie locali e modificarle prima di validare:
+
+```powershell
+$ErrorActionPreference = 'Stop'
+if ((Test-Path .\infra\foundation.parameters.local.json) -or
+    (Test-Path .\infra\application.parameters.local.json)) {
+    throw 'Parametri locali gia presenti: verificarli senza sovrascriverli'
+}
+Copy-Item .\infra\foundation.parameters.example.json .\infra\foundation.parameters.local.json
+Copy-Item .\infra\application.parameters.example.json .\infra\application.parameters.local.json
+```
+
+Prima di rieseguire le copie, verificare che non sovrascrivano parametri
+gia' compilati. I nomi `*.parameters.local.json` sono esclusi da Git nella
+cartella infra; conservarli comunque nel perimetro autorizzato.
+
+| Parametro | Valore da fornire |
+|---|---|
+| environmentName | Identificatore stabile, identico nelle due fasi |
+| location | Regione approvata, identica nelle due fasi |
+| vnetAddressPrefix | Nuovo spazio IP senza sovrapposizioni |
+| aseSubnetPrefix | Subnet ASE dedicata, normalmente /24 |
+| privateEndpointSubnetPrefix | Subnet PE separata, contenuta nella VNet |
+| dnsServerIps | IP privati effettivi dei DNS aziendali raggiungibili |
+| resolverVnetResourceIds | Resource ID delle VNet Azure dei forwarder/inbound; stessa lista nelle due fasi |
+| deployAse | false per preparare rete e PE; true solo dopo i controlli rete/DNS |
+| aseDnsSuffix | Dominio effettivo dell'ASE Ready, per la fase applicazione |
+| aseInternalIp | VIP interno effettivo dell'ASE Ready, per la fase applicazione |
+| tags | Tag approvati senza valori riservati |
+
+1. Sostituire tutti i valori tra `<...>`.
+2. Non inserire tenant ID o subscription ID del fornitore.
+   Per i link resolver usare solo resource ID del proprio ambiente approvato.
+3. Verificare IP validi, subnet non sovrapposte e contenute nella VNet.
+4. Inserire almeno un DNS e almeno una VNet resolver.
+   Il template collega le zone private a queste VNet; non configura server
+   DNS, route, firewall, peerings o forwarding.
+5. Non includere la nuova VNet ASE nella lista resolver: il suo link e'
+   gia' creato automaticamente. Non duplicare gli ID.
+6. Mantenere `deployAse=false` nel primo passaggio.
+7. Non cambiare environmentName o resource group tra i passaggi: i nomi
+   dipendono da questi valori e dalla subscription di destinazione.
+
+### 12.3. Preparare rete, storage e Monitor
+
+1. Autenticarsi nella subscription cliente come nella fase 0.
+2. Sostituire i parametri e creare il nuovo resource group:
+
+```powershell
+$rg = '<new-customer-resource-group>'
+$location = '<approved-region>'
+az group create --name $rg --location $location --output none
+if ($LASTEXITCODE -ne 0) { throw 'Creazione resource group fallita' }
+```
+
+3. Con `deployAse=false`, validare e visualizzare il piano:
+
+```powershell
+az deployment group validate --resource-group $rg --template-file .\infra\foundation.json --parameters '@.\infra\foundation.parameters.local.json' --output none
+if ($LASTEXITCODE -ne 0) { throw 'Validazione fondazione fallita' }
+az deployment group what-if --resource-group $rg --template-file .\infra\foundation.json --parameters '@.\infra\foundation.parameters.local.json'
+if ($LASTEXITCODE -ne 0) { throw 'What-if fondazione fallito' }
+```
+
+4. Controllare le risorse del piano: nuova VNet/subnet/NSG, sette zone
+   private e relativi link, storage e PE Blob/Queue/Table, UAMI e ruoli
+   storage, workspace, Insights, AMPLS, PE Monitor e Metrics Publisher.
+   In questo passaggio non deve essere creata una risorsa ASE.
+5. Non proseguire se sono previste modifiche o rimozioni a risorse aziendali
+   non approvate. I link alle VNet resolver devono essere quelli concordati.
+6. Dopo l'approvazione del piano, distribuire:
+
+```powershell
+az deployment group create --name customer-network --resource-group $rg --template-file .\infra\foundation.json --parameters '@.\infra\foundation.parameters.local.json' --output none
+if ($LASTEXITCODE -ne 0) { throw 'Deployment rete e storage fallito' }
+az deployment group show --name customer-network --resource-group $rg --query "{state:properties.provisioningState,resources:properties.outputs.resourceNames.value,vnetId:properties.outputs.vnetResourceId.value}" --output json
+if ($LASTEXITCODE -ne 0) { throw 'Lettura risultato deployment fallita' }
+```
+
+7. Verificare Succeeded e registrare privatamente nomi e VNet ID restituiti.
+8. Con il team rete collegare la nuova VNet ai resolver e al client privato
+   mediante il percorso approvato. Configurare peering/VPN/route e NSG se necessari.
+9. Configurare i conditional forwarder secondo il
+   [capitolo DNS](customer-dns.md#4-collegare-i-resolver-aziendali).
+10. Da un client autorizzato nella nuova rete verificare che i DNS rispondano
+    e che Blob/Queue/Table e Monitor risolvano agli IP PE esatti.
+    Verificare i target, il ritorno del traffico e le porte necessarie.
+11. Verificare storage Disabled/false/Deny/None, connessioni PE Approved,
+    Insights local auth disabilitata e Monitor pubblico disabilitato.
+
+### 12.4. Creare ASE solo dopo la verifica DNS
+
+1. Nel file locale fondazione impostare soltanto `deployAse=true`.
+   Lasciare invariati gli altri parametri.
+2. Ripetere validate e what-if della sezione 12.3.
+3. Verificare che l'aggiunta sia ASE interno e che eventuali differenze
+   sulle risorse preparate non alterino routing, DNS, privacy o ruoli.
+4. Dopo approvazione distribuire:
+
+```powershell
+az deployment group create --name customer-foundation --resource-group $rg --template-file .\infra\foundation.json --parameters '@.\infra\foundation.parameters.local.json' --output none
+if ($LASTEXITCODE -ne 0) { throw 'Deployment ASE fallito' }
+```
+
+5. Attendere deployment Succeeded e ASE Ready.
+6. Leggere dal portale dominio effettivo e VIP interno dell'ASE.
+   Non costruirli a partire dai nomi.
+7. Configurare il forwarding del dominio ASE verso il resolver Azure.
+   Il template applicazione crea la zona e i record nella fase successiva.
+8. Non rieseguire la fondazione dopo l'introduzione di modifiche operative
+   senza esaminare un nuovo what-if. Non cambiare `deployAse` per tentare
+   di eliminare l'ASE; la rimozione richiede una procedura approvata separata.
+
+### 12.5. Creare il piano e la Logic App
+
+1. Nel file locale applicazione confermare environmentName, regione,
+   resource group e lista resolver della fondazione.
+2. Compilare aseDnsSuffix e aseInternalIp con i valori letti dall'ASE.
+3. Attendere la propagazione dei ruoli della UAMI.
+4. Validare e visualizzare il piano:
+
+```powershell
+az deployment group validate --resource-group $rg --template-file .\infra\application.json --parameters '@.\infra\application.parameters.local.json' --output none
+if ($LASTEXITCODE -ne 0) { throw 'Validazione applicazione fallita' }
+az deployment group what-if --resource-group $rg --template-file .\infra\application.json --parameters '@.\infra\application.parameters.local.json'
+if ($LASTEXITCODE -ne 0) { throw 'What-if applicazione fallito' }
+```
+
+5. Verificare zona DNS ASE e link/record, nuovo piano Windows I1v2 con una
+   istanza, nuova Logic App con UAMI, Basic Auth SCM/FTP disabilitata e
+   diagnostica al workspace dedicato.
+6. Non usare questo template su app esistenti: definisce tutte le app settings.
+   Non modificare o rimuovere diagnostic settings creati dalle policy.
+7. Dopo approvazione distribuire:
+
+```powershell
+az deployment group create --name customer-application --resource-group $rg --template-file .\infra\application.json --parameters '@.\infra\application.parameters.local.json' --output none
+if ($LASTEXITCODE -ne 0) { throw 'Deployment applicazione fallito' }
+az deployment group show --name customer-application --resource-group $rg --query "{state:properties.provisioningState,app:properties.outputs.appName.value,plan:properties.outputs.planName.value,url:properties.outputs.privateAppUrl.value}" --output json
+if ($LASTEXITCODE -ne 0) { throw 'Lettura risultato applicazione fallita' }
+```
+
+8. Verificare Succeeded, host, identity/settings e DNS app/SCM verso il VIP.
+   L'URL restituito richiede routing e DNS privati.
+9. Assegnare separatamente i permessi degli operatori secondo la fase 6.
+   I template non attribuiscono permessi automaticamente agli utenti.
+10. Seguire le fasi 8-11: configurare host.json, creare il workflow nel designer,
+    verificare dati reali, creare Workbook e collaudare.
+    Il tipo `functionapp,workflowapp` identifica Logic App Standard;
+    non e' una Function App aggiuntiva.
+
+### 12.6. Rigenerare i JSON e verificare i risultati
+
+Se si modificano i sorgenti Bicep, ricompilare entrambi i template:
+
+```powershell
+az bicep build --file .\infra\foundation.bicep --outfile .\infra\foundation.json
+if ($LASTEXITCODE -ne 0) { throw 'Compilazione fondazione fallita' }
+az bicep build --file .\infra\application.bicep --outfile .\infra\application.json
+if ($LASTEXITCODE -ne 0) { throw 'Compilazione applicazione fallita' }
+```
+
+Prima di pubblicare controllare template, parametri di esempio e output:
+non includere credenziali, ID reali, domini o dati del proprio ambiente.
+La compilazione verifica sintassi e tipi; validate e what-if verificano il
+contesto cliente. Nessuno di questi controlli sostituisce il collaudo runtime
+o dimostra che Application Insights/Workbook ricevano dati.

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "environmentName": { "value": "customerpoc" },
+    "location": { "value": "italynorth" },
+    "vnetAddressPrefix": { "value": "10.100.0.0/16" },
+    "aseSubnetPrefix": { "value": "10.100.0.0/24" },
+    "privateEndpointSubnetPrefix": { "value": "10.100.1.0/24" },
+    "dnsServerIps": { "value": ["<private-customer-dns-ip>"] },
+    "resolverVnetResourceIds": {
+      "value": ["/subscriptions/<customer-subscription-id>/resourceGroups/<dns-resource-group>/providers/Microsoft.Network/virtualNetworks/<resolver-vnet>"]
+    },
+    "deployAse": { "value": false },
+    "tags": { "value": { "purpose": "availability-lab" } }
+  }
+}
