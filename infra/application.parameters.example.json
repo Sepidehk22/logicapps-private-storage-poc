@@ -6,6 +6,8 @@
     "location": { "value": "italynorth" },
     "aseDnsSuffix": { "value": "<actual-ase-dns-suffix>" },
     "aseInternalIp": { "value": "<actual-ase-internal-vip>" },
+    "serviceAUrl": { "value": "https://<private-service-a-host>/health" },
+    "serviceBUrl": { "value": "https://<private-service-b-host>/health" },
     "resolverVnetResourceIds": {
       "value": ["/subscriptions/<customer-subscription-id>/resourceGroups/<dns-resource-group>/providers/Microsoft.Network/virtualNetworks/<resolver-vnet>"]
     },

@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.47.16.16243",
-      "templateHash": "295265923434334072"
+      "templateHash": "16970747318592302759"
     }
   },
   "parameters": {
@@ -42,6 +42,20 @@
       "minLength": 1,
       "metadata": {
         "description": "Same existing resolver VNet IDs as the foundation stage."
+      }
+    },
+    "serviceAUrl": {
+      "type": "string",
+      "minLength": 1,
+      "metadata": {
+        "description": "Customer health endpoint A. Use HTTPS in production; never include credentials in the URL."
+      }
+    },
+    "serviceBUrl": {
+      "type": "string",
+      "minLength": 1,
+      "metadata": {
+        "description": "Customer health endpoint B. Use HTTPS in production; never include credentials in the URL."
       }
     },
     "tags": {
@@ -175,6 +189,14 @@
             {
               "name": "FUNCTIONS_WORKER_RUNTIME",
               "value": "dotnet"
+            },
+            {
+              "name": "AVAILABILITY_SERVICE_A_URL",
+              "value": "[parameters('serviceAUrl')]"
+            },
+            {
+              "name": "AVAILABILITY_SERVICE_B_URL",
+              "value": "[parameters('serviceBUrl')]"
             },
             {
               "name": "AzureWebJobsStorage__managedIdentityResourceId",

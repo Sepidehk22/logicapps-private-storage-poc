@@ -75,7 +75,9 @@ Per automatizzare la creazione con **DNS aziendale esistente**, seguire la
 4. Dopo ASE Ready, usare dominio e VIP effettivi per il template applicazione.
 5. Eseguire validazione ARM e what-if nella subscription di destinazione
    prima di ogni passaggio.
-6. Configurare workflow, host.json e Workbook seguendo il manuale, quindi collaudare.
+6. Distribuire il [codice availability](logicapp/availability/workflow.json)
+   seguendo la [procedura di pubblicazione](docs/runbook.md#13-pubblicare-il-workflow-availability).
+   Configurare Workbook e collaudare.
 
 Usare questi template solo per risorse dedicate in un nuovo resource group
 su Azure pubblico. Non includono VM, Bastion, gateway, peering, password,
@@ -88,3 +90,20 @@ I sorgenti [foundation.bicep](infra/foundation.bicep) e
 [application.bicep](infra/application.bicep) permettono di rigenerare i JSON.
 Verificare deployment e funzionamento nella subscription di destinazione:
 la compilazione non certifica capacita', connettivita' o ingestion della telemetria.
+
+## Codice del controllo availability
+
+1. Configurare gli URL dei due servizi nelle app settings
+   `AVAILABILITY_SERVICE_A_URL` e `AVAILABILITY_SERVICE_B_URL`.
+   Con ARM compilare `serviceAUrl` e `serviceBUrl` nei parametri applicazione.
+2. Usare i sorgenti [workflow.json](logicapp/availability/workflow.json),
+   [host.json](logicapp/host.json) e [parameters.json](logicapp/parameters.json).
+   Mantenere gli URL fuori dal codice condiviso e non inserirvi credenziali.
+3. Eseguire lo [script di pubblicazione](scripts/Publish-Availability.ps1)
+   dal client privato con Entra, seguendo il runbook.
+4. Verificare tre run automatiche, entrambi gli esiti HTTP, persistenza,
+   telemetria, guasti e ripristino secondo il collaudo.
+
+Il workflow esegue due GET indipendenti ogni cinque minuti, senza retry.
+Per il laboratorio il timeout HTTP e' 30 secondi e Healthy richiede HTTP 200.
+Non sostituisce un test del payload o un monitoraggio da punti esterni all'ASE.

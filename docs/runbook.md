@@ -345,6 +345,10 @@ foreach ($policy in @('scm', 'ftp')) {
 | `APPLICATIONINSIGHTS_CONNECTION_STRING` | Connection string di Insights, non credenziale storage |
 | `APPLICATIONINSIGHTS_AUTHENTICATION_STRING` | `Authorization=AAD;ClientId=<client-id-UAMI>` |
 
+Se si distribuisce il codice availability della sezione 13, aggiungere anche
+`AVAILABILITY_SERVICE_A_URL` e `AVAILABILITY_SERVICE_B_URL` con gli URL
+effettivi dei servizi, senza credenziali.
+
 4. Usare i normali FQDN dei servizi, non IP o URL `privatelink`.
 5. Mantenere obbligatoria l'autenticazione Entra per Insights.
    Usare la connection string per identificare la risorsa, non come
@@ -415,6 +419,10 @@ Verificare l'ingestion con le run della fase 9 e prima del Workbook.
 ## 9. Workflow visuale dei controlli
 
 **Dove operare:** designer Logic App dal client privato.
+
+Per distribuire il workflow gia' definito, seguire la sezione 13 in
+alternativa ai passaggi di creazione manuale seguenti. Non creare due
+workflow con lo stesso nome.
 
 1. Creare un workflow **Stateful** chiamato `availability`.
 2. Aggiungere trigger **Recurrence**, ogni **5 minuti**.
@@ -493,7 +501,8 @@ Workbook salvato e accessibile privatamente, stati e freshness corretti.
 
 Usare questa procedura in alternativa alla creazione manuale delle risorse
 delle fasi 1-7. Dopo il deployment riprendere dalla fase 8 per host.json,
-workflow e Workbook, e completare il collaudo.
+workflow e Workbook oppure distribuire il codice con la sezione 13.
+Completare comunque il collaudo.
 
 **Dove operare:** PowerShell 7 con Azure CLI autenticata nella subscription
 di destinazione. Aprire il terminale nella cartella del repository scaricato.
@@ -549,6 +558,7 @@ cartella infra; conservarli comunque nel perimetro autorizzato.
 | deployAse | false per preparare rete e PE; true solo dopo i controlli rete/DNS |
 | aseDnsSuffix | Dominio effettivo dell'ASE Ready, per la fase applicazione |
 | aseInternalIp | VIP interno effettivo dell'ASE Ready, per la fase applicazione |
+| serviceAUrl / serviceBUrl | URL dei due health endpoint, senza credenziali; HTTPS per servizi aziendali |
 | tags | Tag approvati senza valori riservati |
 
 1. Sostituire tutti i valori tra `<...>`.
@@ -638,7 +648,8 @@ if ($LASTEXITCODE -ne 0) { throw 'Deployment ASE fallito' }
 
 1. Nel file locale applicazione confermare environmentName, regione,
    resource group e lista resolver della fondazione.
-2. Compilare aseDnsSuffix e aseInternalIp con i valori letti dall'ASE.
+2. Compilare aseDnsSuffix e aseInternalIp con i valori letti dall'ASE,
+   serviceAUrl e serviceBUrl con gli URL dei target raggiungibili dal runtime.
 3. Attendere la propagazione dei ruoli della UAMI.
 4. Validare e visualizzare il piano:
 
@@ -667,8 +678,8 @@ if ($LASTEXITCODE -ne 0) { throw 'Lettura risultato applicazione fallita' }
    L'URL restituito richiede routing e DNS privati.
 9. Assegnare separatamente i permessi degli operatori secondo la fase 6.
    I template non attribuiscono permessi automaticamente agli utenti.
-10. Seguire le fasi 8-11: configurare host.json, creare il workflow nel designer,
-    verificare dati reali, creare Workbook e collaudare.
+10. Seguire le fasi 8-11 oppure pubblicare host.json e workflow con la
+    sezione 13; verificare dati reali, creare Workbook e collaudare.
     Il tipo `functionapp,workflowapp` identifica Logic App Standard;
     non e' una Function App aggiuntiva.
 
@@ -688,3 +699,107 @@ non includere credenziali, ID reali, domini o dati del proprio ambiente.
 La compilazione verifica sintassi e tipi; validate e what-if verificano il
 contesto cliente. Nessuno di questi controlli sostituisce il collaudo runtime
 o dimostra che Application Insights/Workbook ricevano dati.
+
+## 13. Pubblicare il workflow availability
+
+**Dove operare:** PowerShell 7 sul client privato con Azure CLI.
+Aprire il terminale nella cartella del repository scaricato.
+
+### 13.1. Preparare app, URL e permessi
+
+1. Completare la creazione della Logic App, DNS ASE, managed identity e storage.
+2. Confermare che il client raggiunga privatamente il VIP ASE e SCM su
+   HTTPS 443, con certificato attendibile.
+3. Autenticarsi nella subscription prevista, come nella fase 0.
+4. Verificare Website Contributor o permessi equivalenti sulla sola app
+   per l'operatore che pubblica. Non usare account dello storage o Basic Auth SCM.
+5. Per una nuova app creata via ARM, compilare `serviceAUrl` e `serviceBUrl`
+   nel file locale dei parametri prima del deployment applicazione.
+6. Per un'app gia' creata, impostare nel portale soltanto queste variabili:
+
+| App setting | Valore |
+|---|---|
+| `AVAILABILITY_SERVICE_A_URL` | URL completo del health endpoint A |
+| `AVAILABILITY_SERVICE_B_URL` | URL completo del health endpoint B |
+
+7. Salvare le variabili e applicare il riavvio nella finestra concordata.
+   Non ridistribuire tutto il template ARM per aggiornare soltanto gli URL.
+8. Usare HTTPS per servizi aziendali. Non mettere password, token, API key
+   o SAS negli URL. Il codice distribuito non aggiunge autenticazione ai target:
+   se richiesta, configurare la managed identity dell'azione, audience e
+   autorizzazioni nel designer prima del collaudo.
+9. Verificare DNS, routing e contratto HTTP dei target.
+   Per il laboratorio usare i due siti privati della fase 4.
+10. Usare un'app dedicata. Lo ZIP aggiorna host.json, parameters.json e il
+    workflow `availability`; non distribuirlo su un'app con altri workflow
+    senza verificarne l'impatto e predisporre un rollback.
+
+### 13.2. Verificare i file da distribuire
+
+Mantenere questa struttura nel pacchetto, senza la cartella `logicapp` esterna:
+
+```text
+host.json
+parameters.json
+availability/
+  workflow.json
+```
+
+1. Usare [host.json](../logicapp/host.json) per bundle workflow, telemetria v2,
+   timeout 30 secondi e sampling disabilitato nel laboratorio.
+2. Usare [parameters.json](../logicapp/parameters.json) per leggere gli URL
+   dalle app settings. Non inserire URL reali nel repository pubblico.
+3. Usare [workflow.json](../logicapp/availability/workflow.json) per
+   Stateful, Recurrence ogni 5 minuti e due azioni HTTP parallele.
+4. Mantenere i nomi Check_Service_A/Check_Service_B e tracked properties
+   service/httpStatus coerenti con le query del Workbook.
+5. Non aggiungere local.settings.json, parametri ARM, log o credenziali allo ZIP.
+   Lo script include esclusivamente i tre file indicati.
+
+### 13.3. Creare lo ZIP senza distribuirlo, se necessario
+
+Eseguire per ispezionare o conservare un pacchetto nel perimetro autorizzato:
+
+```powershell
+.\scripts\Publish-Availability.ps1 -PackageOnly -PackagePath '<new-absolute-path-to-availability.zip>'
+```
+
+Scegliere un percorso nuovo in una cartella esistente.
+Non pubblicare ZIP o file di configurazione aziendale nel repository.
+
+### 13.4. Distribuire dalla rete privata
+
+1. Acquisire nome app, resource group e VIP interno effettivo dal portale.
+2. Sostituire i valori ed eseguire:
+
+```powershell
+.\scripts\Publish-Availability.ps1 -ResourceGroup '<customer-resource-group>' -AppName '<logic-app-name>' -ExpectedAsePrivateIp '<actual-private-ase-vip>'
+```
+
+3. Lo script crea uno ZIP temporaneo dei soli tre file, verifica il nome
+   SCM dalla risorsa selezionata e la risoluzione esclusiva al VIP indicato.
+4. Il caricamento usa Entra tramite Azure CLI, HTTPS con verifica del
+   certificato e senza proxy o redirect. Il token resta in memoria e non
+   viene passato come argomento di comando o scritto su file.
+5. Attendere il messaggio PASS con deployment SCM status 4/completo.
+   Un HTTP 202 di caricamento non basta per considerare concluso il deployment.
+6. Se la verifica scade o fallisce, consultare lo stato del deployment
+   esistente e i log privati prima di riprovare.
+   Non aprire SCM/storage o abilitare Basic Auth.
+7. Lo script elimina lo ZIP temporaneo al termine, anche in caso di errore.
+
+### 13.5. Verificare il workflow dopo la pubblicazione
+
+1. Aprire Workflows nel portale dal client privato e selezionare `availability`.
+2. Verificare risoluzione dei parametri, URI effettivi, rami indipendenti
+   e retry None. Non condividere schermate contenenti dati aziendali.
+3. Verificare almeno tre run automatiche e i due HTTP 200.
+4. Confermare tracked properties, storia Stateful e nuove run dopo restart.
+5. Verificare ingestion e schema nel workspace; creare e collaudare il Workbook.
+6. Eseguire guasto HTTP B, DNS B, recovery, Unknown/stale e storage
+   privato/pubblico secondo il [collaudo](validation.md).
+7. Non considerare il messaggio di deployment riuscito una certificazione
+   del runtime o della telemetria.
+
+Riferimento:
+[parametri dei workflow Standard](https://learn.microsoft.com/azure/logic-apps/create-parameters-workflows).

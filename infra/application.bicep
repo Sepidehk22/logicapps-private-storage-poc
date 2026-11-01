@@ -20,6 +20,14 @@ param aseInternalIp string
 @minLength(1)
 param resolverVnetResourceIds array
 
+@description('Customer health endpoint A. Use HTTPS in production; never include credentials in the URL.')
+@minLength(1)
+param serviceAUrl string
+
+@description('Customer health endpoint B. Use HTTPS in production; never include credentials in the URL.')
+@minLength(1)
+param serviceBUrl string
+
 param tags object = {}
 
 var suffix = uniqueString(resourceGroup().id, environmentName)
@@ -81,6 +89,8 @@ resource app 'Microsoft.Web/sites@2024-11-01' = {
         { name: 'APP_KIND', value: 'workflowApp' }
         { name: 'FUNCTIONS_EXTENSION_VERSION', value: '~4' }
         { name: 'FUNCTIONS_WORKER_RUNTIME', value: 'dotnet' }
+        { name: 'AVAILABILITY_SERVICE_A_URL', value: serviceAUrl }
+        { name: 'AVAILABILITY_SERVICE_B_URL', value: serviceBUrl }
         { name: 'AzureWebJobsStorage__managedIdentityResourceId', value: identity.id }
         { name: 'AzureWebJobsStorage__credential', value: 'managedIdentity' }
         { name: 'AzureWebJobsStorage__blobServiceUri', value: 'https://${storage.name}.blob.${environment().suffixes.storage}' }
